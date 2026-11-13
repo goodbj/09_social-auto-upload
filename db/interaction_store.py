@@ -143,7 +143,27 @@ CREATE TABLE IF NOT EXISTS candidates (
     at              TEXT NOT NULL,
     UNIQUE(round_id, comment_id)
 );
+
+-- M4 派工订单：候选采纳后派给 11 号簇（图像视频部）做新集，三态回执落库
+CREATE TABLE IF NOT EXISTS dispatch_orders (
+    order_id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    candidate_id    INTEGER NOT NULL REFERENCES candidates(candidate_id),
+    platform        TEXT NOT NULL DEFAULT 'weixin',
+    account         TEXT NOT NULL DEFAULT '丸小子998',
+    target_cluster  TEXT NOT NULL DEFAULT '11-ImageGen',
+    target_run      TEXT NOT NULL DEFAULT 'run_c4f2e504f048',
+    topic           TEXT NOT NULL DEFAULT '',
+    payload_json    TEXT NOT NULL DEFAULT '{}',
+    status          TEXT NOT NULL DEFAULT 'created',
+    dispatched_at   TEXT,
+    ack_at          TEXT,
+    result_json     TEXT NOT NULL DEFAULT '{}',
+    note            TEXT NOT NULL DEFAULT '',
+    at              TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_dispatch_status ON dispatch_orders(status);
 """
+
 
 # 默认账号（向后兼容老脚本 / 老数据）：视频号 · 丸小子998
 DEFAULT_PLATFORM = "weixin"
@@ -435,3 +455,86 @@ def summary(round_id: int) -> dict:
 if __name__ == "__main__":
     init_db()
     print(f"✅ 闭环库就绪: {DB_PATH}")
+
+
+# ── M4 派工闭环（第 5~6 步）：拍板 + 派 11 + 回执落库 ──────────────────
+def decide_candidates(candidate_ids: list[int], decision: str, note: str = "") -> int:
+    """老泡儿拍板：把指定候选 decision 改成 采纳/搁置。返回受影响行数。"""
+    assert decision in ("采纳", "搁置"), "decision 只认 采纳/搁置"
+    conn = connect()
+    try:
+        n = 0
+        for cid in candidate_ids:
+            c = conn.execute("UPDATE candidates SET decision=?, note=? "
+                             "WHERE candidate_id=? AND decision='待拍板'",
+                             (decision, note, cid))
+            n += c.rowcount
+        conn.commit()
+        return n
+    finally:
+        conn.close()
+
+
+def list_pending_candidates(platform: str = DEFAULT_PLATFORM, account: str = DEFAULT_ACCOUNT) -> list[dict]:
+    aid = account_id(platform, account)
+    conn = connect()
+    try:
+        return [dict(x) for x in conn.execute(
+            "SELECT candidate_id,round_id,nickname,source_tag,text,signals,decision "
+            "FROM candidates WHERE account_id=? AND decision='待拍板' ORDER BY candidate_id",
+            (aid,)).fetchall()]
+    finally:
+        conn.close()
+
+
+def create_dispatch_order(candidate_id: int, payload: dict, *, platform: str = DEFAULT_PLATFORM,
+                          account: str = DEFAULT_ACCOUNT,
+                          target_cluster: str = "11-ImageGen",
+                          target_run: str = "run_c4f2e504f048") -> int:
+    """把采纳候选打包成派工单，落 dispatch_orders（created 态）。返回 order_id。"""
+    conn = connect()
+    try:
+        cur = conn.execute(
+            "INSERT INTO dispatch_orders(candidate_id,platform,account,target_cluster,target_run,"
+            "topic,payload_json,at) VALUES(?,?,?,?,?,?,?,?)",
+            (candidate_id, platform, account, target_cluster, target_run,
+             payload.get("topic", ""), json.dumps(payload, ensure_ascii=False), now()))
+        conn.commit()
+        return int(cur.lastrowid)
+    finally:
+        conn.close()
+
+
+def list_dispatch_orders(status: str | None = None) -> list[dict]:
+    conn = connect()
+    try:
+        if status:
+            rows = conn.execute("SELECT * FROM dispatch_orders WHERE status=? ORDER BY order_id",
+                                (status,)).fetchall()
+        else:
+            rows = conn.execute("SELECT * FROM dispatch_orders ORDER BY order_id").fetchall()
+        return [dict(x) for x in rows]
+    finally:
+        conn.close()
+
+
+def dispatch_order(order_id: int) -> None:
+    """标记已投出（dispatched）。真实投递走 orca 信道由调用方负责。"""
+    conn = connect()
+    try:
+        conn.execute("UPDATE dispatch_orders SET status='dispatched', dispatched_at=? WHERE order_id=?",
+                     (now(), order_id))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def ack_dispatch_order(order_id: int, result: dict) -> None:
+    """11 回执回来：标记 acked + 存回执。"""
+    conn = connect()
+    try:
+        conn.execute("UPDATE dispatch_orders SET status='acked', ack_at=?, result_json=? WHERE order_id=?",
+                     (now(), json.dumps(result, ensure_ascii=False), order_id))
+        conn.commit()
+    finally:
+        conn.close()
