@@ -28,7 +28,7 @@ from datetime import datetime, date
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-STATE_FILE = BASE_DIR / "logs" / "human_session_state.json"
+STATE_FILE = BASE_DIR / "youpick_workflow" / "data" / "logs" / "human_session_state.json"
 
 # 各类动作的随机停顿区间（秒）。调试想快进可传 scale<1，但正式跑必须是 1.0。
 RANGES: dict[str, tuple[float, float]] = {
@@ -46,7 +46,9 @@ RANGES: dict[str, tuple[float, float]] = {
 # 硬闸：未经点头绝不发送
 SEND_ENABLED = False
 DAILY_REPLY_CAP_DEFAULT = 200
-ACTIVE_HOURS_DEFAULT = (9, 22)   # 夜里不操作，别半夜刷屏
+# 测试期临时放宽到 24 点（老泡儿 2026-11-13：测试阶段粉丝少、不引官方注意，可暂忽略）；
+# 正式放量前收紧回 (9, 22)，夜里不刷屏。
+ACTIVE_HOURS_DEFAULT = (9, 24)
 DISTRACT_CHANCE = 0.08           # 8% 概率走神，多停 4~12 秒
 
 
@@ -54,7 +56,7 @@ def _stamp(msg: str) -> None:
     print(f"{datetime.now():%Y-%m-%d %H:%M:%S} | {msg}", flush=True)
     try:
         STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        with (BASE_DIR / "logs" / "human_pace.log").open("a", encoding="utf-8") as f:
+        with (BASE_DIR / "youpick_workflow" / "data" / "logs" / "human_pace.log").open("a", encoding="utf-8") as f:
             f.write(f"{datetime.now():%Y-%m-%d %H:%M:%S} | {msg}\n")
     except Exception:
         pass

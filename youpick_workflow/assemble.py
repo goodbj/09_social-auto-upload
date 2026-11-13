@@ -17,9 +17,10 @@ from youpick_workflow import capabilities as cap
 from youpick_workflow.pace import PaceAdapter
 from youpick_workflow.store import StoreAdapter
 
-# 默认浏览器 profile（视频号实现用；多账号时按 account 换目录在 assemble 里决定）
-PROFILE_DIR = Path(__file__).parent.parent / "cookies" / "chrome_profile_tencent"
-ARCHIVE_DIR = Path(__file__).parent.parent / "docs" / "round_archive"
+# 所有运行时产物统一进 youpick_workflow/data/：浏览器 profile / 归档 / 库
+DATA_DIR = Path(__file__).parent / "data"
+PROFILE_DIR = DATA_DIR / "chrome_profile_tencent"
+ARCHIVE_DIR = DATA_DIR / "round_archive"
 
 
 def build_client(edition: str, *, platform: str, account: str, export_id: str):

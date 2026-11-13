@@ -29,7 +29,7 @@ from db import interaction_store as store  # noqa: E402
 
 BASE_DIR = Path(__file__).parent.resolve()
 CHROME_EXE = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
-PROFILE_DIR = BASE_DIR / "cookies" / "chrome_profile_tencent"
+PROFILE_DIR = BASE_DIR / "youpick_workflow" / "data" / "chrome_profile_tencent"
 LOG_DIR = BASE_DIR / "logs"
 COMMENT_PAGE = "https://channels.weixin.qq.com/platform/interaction/comment"
 LIST_API = "/micro/interaction/cgi-bin/mmfinderassistant-bin/comment/comment_list"

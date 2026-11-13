@@ -36,7 +36,7 @@ def is_like_worthy(text: str) -> bool:
 
 def should_reply(text: str) -> bool:
     """core 只判「内容值不值得接」；是否真发、回谁，由 runner 结合幂等/闸把关。"""
-    return any(keys in text for keys, _ in REPLY_RULES)
+    return any(k in text for keys, _ in REPLY_RULES for k in keys)
 
 
 def build_reply(text: str) -> str:

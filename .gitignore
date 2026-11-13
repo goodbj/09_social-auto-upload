@@ -183,19 +183,16 @@ node_modules/
 package-lock.json
 !utils/article_renderer/package-lock.json
 
-# database
-db/database.db
-# 09 本地闭环镜像库（含昵称/username，本地数据不外发）
-db/*.sqlite3
-db/*.sqlite3-wal
-db/*.sqlite3-shm
-db/*_backup.sqlite3
-# 09 本地运行日志/状态/截图（本地数据不外发）
+# ── 09 闭环产品运行时数据：整目录不放进 git（迁移=拷贝 youpick_workflow/data 即可）──
+# 库 / 日志 / 归档 / 浏览器会话 profile 全在 youpick_workflow/data/ 一个目录里
+youpick_workflow/data/
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+*_backup.sqlite3
 logs/
 *.png
-# 浏览器 profile 探针缓存
 .chrome_profile_probe/
-# 09 探路原始样本/归档（含第三方昵称/username，本地数据不外发）
 docs/probe_api_samples/
 docs/round_archive/
 

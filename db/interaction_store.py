@@ -27,7 +27,7 @@ from datetime import datetime
 from pathlib import Path
 
 BASE_DIR = Path(__file__).parent.parent.resolve()
-DB_PATH = BASE_DIR / "db" / "youpick_interaction.sqlite3"
+DB_PATH = BASE_DIR / "youpick_workflow" / "data" / "youpick_interaction.sqlite3"
 
 # 已知亲友 / 自测样本（老泡儿 2026-11-13 当面说明；后续有新号往这儿补）
 SELF_NICKNAMES = {"丸小子998"}                 # 主号自己
