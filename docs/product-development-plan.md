@@ -26,6 +26,15 @@
 
 ## 2. 三档版本规划（销售切分）
 
+> **开发顺序铁律（老泡儿 2026-11-13 定）**：**先按至尊版（全功能）开发，完全开发完再考虑怎么删减出普通版/体验版。**
+> 三个版本是销售考量，不是开发顺序。写代码时**必须按「能拆」来划分**，别把文件写得太黏，否则将来精简版要重写。
+>
+> **落地原则**：
+> - 版本差异只放在**能力配置层**（capabilities / edition 开关 / 模块装配），核心逻辑内部**不散落 `if edition ==`**；
+> - 精简版 = 「关开关 + 拆模块」，**不是改逻辑、不是重写**；
+> - 每个功能模块（发布/读评/互动/候选/派工/归档/远程服务/计费）**可独立关闭或移除**；
+> - 平台/账号维度走接口，不写死（已落地：`db/interaction_store.py` 的 `accounts` 表 + `(platform,account)` 复合键）。
+
 | 版本 | 定位 | 核心能力 | 阉割点（引流/限客） |
 |---|---|---|---|
 | **体验版**（引流） | 让客户上手即见闭环、留钩子 | 单账号 · 单平台 · 只读 + 少量互动（限日额）· 基础候选整理 | 多账号/多平台封死；定制人设封死；远程托管封死；闭环第 4~6 步（拍板→派工→新集）只演示不通 |
@@ -51,8 +60,37 @@
 
 ## 4. 技术架构要点
 
+### 4.0 可拆分代码分层（版本可拆的地基，先立规矩）
+
+代码按「**核心逻辑 / 能力开关 / 平台适配 / 版本装配**」四层分，版本差异只准出现在后两层：
+
+```
+core/           核心逻辑（纯业务，不知道 edition、不 import 平台 SDK）
+  ├─ publish.py     发布（零扫码链路）
+  ├─ comments.py    读评/点赞/楼中楼/回复
+  ├─ candidates.py  候选搜集/整理
+  ├─ workflow.py    六步闭环调度
+  └─ human_pace.py  拟人节奏（已有）
+platform/       平台适配层（接口 + 各平台实现，可插拔）
+  ├─ base.py        平台接口（发/读/赞/回）
+  ├─ weixin.py      视频号实现
+  ├─ douyin.py      抖音（M1 起预留，先空实现）
+  └─ ...
+capabilities.py 能力开关（单一真源：edition → 允许的功能/额度/账号数/平台）
+assemble.py     版本装配（按 capabilities 装模块；体验版=装子集，至尊版=全装）
+```
+
+**硬规矩**：
+1. `core/` 里**不准出现** `edition` / `is_premium` / 平台名判断——它只调 `platform/base.py` 接口；
+2. 版本差异**只准**写在 `capabilities.py` + `assemble.py`；精简版是「换一份 capabilities + 少装几个模块」，**不动 core**；
+3. 每个模块**可独立关闭**（装配时不装 / 开关关掉），关闭后不影响别的模块；
+4. 平台/账号**一律走接口**，新增平台 = 加一个 `platform/xxx.py`，不改 core；
+5. 写代码时心里常备三档（体验/标准/至尊），但**开发顺序是至尊版优先**，先全功能跑通，再按 capabilities 裁剪。
+
+### 4.1 架构要点
+
 - **多平台多账号库（M1 核心）**：`interaction_store.py` 从 `(export_id, 单账号)` 扩成 `(platform, account)` 复合主键；
-  调度按账号分节奏、分人设、分内容，避免「几个号一个味儿」的关联风控。
+  调度按账号分节奏、分人设、分内容，避免「几个号一个味儿」的关联风控。✅ 已完成
 - **模板组装引擎（打包引擎）**：从 01~99 插件库摘 L2 外核插件组合行业模板；验收「一句话 → 自动分析所需插件 → 集成打包成型」。
 - **远程服务封装**：远程安装/维护/客服通道产品化、持续收费（L1 内核独享，09 调用不持有）。
 - **人机协作不改**：草稿 → 老泡儿过审 → 发，前期永不开全自动群回。
@@ -62,10 +100,11 @@
 | 里程碑 | 内容 | 交付 | 状态 |
 |---|---|---|---|
 | **M1** | 多平台多账号库重构 + 调度隔离 | `interaction_store.py` 复合主键；`interaction_round.py`/`maintain_fans.py` 参数化平台账号 | ✅ **已完成 2026-11-13** |
-| **M2** | 版本功能切分 + 体验版引流包 | 功能开关表 + 体验版阉割得当、开箱即跑 demo | ⏳ 待开工 |
+| **M2** | **可拆分骨架 + 至尊版全功能**：`core/platform/capabilities/assemble` 四层；能力开关先全开=至尊版 | 模块骨架 + 至尊版全功能跑通 | 🔧 骨架已立 2026-11-13（至尊版装配自检通过，待真发核验） |
 | **M3** | 远程服务封装 + 计费 | 远程安装/维护/客服通道；报价单 + 续费钩子 | ⏳ 待开工 |
 | **M4** | 09↔11 派工闭环（闭环第 4~6 步） | 候选→老泡儿拍板→派 11 做新集→回执落库 | ⏳ 待开工 |
 | **M5** | 销售物料 | 演示视频 / 报价单 / 验收清单 | ⏳ 待开工 |
+| **M6** | **版本裁剪（至尊版跑通后再做）** | 体验版/标准版 = 换 capabilities + 少装模块，不动 core | ⏳ 待开工 |
 
 ### M1 交付明细（2026-11-13）
 
@@ -74,6 +113,35 @@
 - `interaction_round.py` / `maintain_fans.py` 支持 `--platform / --account / --export-id`，默认向后兼容 `weixin/丸小子998`。
 - 迁移：`db/migrate_v1_to_v2.py`（旧库备份 + schema 升级）+ `db/seed_v2.py`（真发动作账复原，幂等核验通过）。
 - 验证：同 comment_id 在视频号为 True、在抖音/测试号为 False，两账号隔离成立。
+
+### M2 骨架明细（2026-11-13）
+
+按第 4.0 节分层规矩落地，彻底切开原来的「浏览器+CGI+业务判断+库调用」大坨。所有版本差异只出现在 `capabilities.py` + `assemble.py`，core 零耦合（已代码级扫描确认）。
+
+```
+youpick_workflow/
+  capabilities.py        能力开关单一真源（edition → 功能/额度/账号数/平台）
+  assemble.py            版本装配（按 capabilities 装模块、传参数；唯二版本差异落点）
+  cli.py                 一句话触发入口（--task fans/round --edition premium --approved）
+  identity.py            来源判定中性层（自家/亲友/引子/自然流量/待核，名单可注入）
+  pace.py                拟人节奏适配器（包 human_pace；暴露 session/nap/human_read/consume_*）
+  store.py               库适配器（包 interaction_store；收 Comment 对象、出 action 列表）
+  core/                  核心业务（纯逻辑，不知 edition、不认平台名）
+    candidates.py        候选筛选（第4步，纯函数）
+    interaction.py       赞/回裁决 + 胡同串子接话草稿（内容策略，纯函数）
+    workflow.py          六步闭环调度（runner，全靠依赖注入）
+  connectors/            平台适配层（可插拔，core 只认 base 契约）
+    base.py              PlatformClient 抽象 + 统一 Comment 结构（core 唯一直接依赖）
+    weixin.py            视频号实现（浏览器+CGI，抽出自原脚本）
+```
+
+- `capabilities.py`：16 个 feature 单一登记处；trial(9)/standard(11)/premium(16) 三档；premium 全开（多账号99/多平台4/日软上限80）。
+- `core/` 经代码级 AST 扫描：**无任何 `if edition==` / 平台名条件分支**，只认 `connectors.base.PlatformClient` 与依赖注入的 store/pace。
+- `connectors/weixin.py`：把原 `maintain_fans.py` / `interaction_round.py` 里那一坨浏览器+CGI 抽成 `PlatformClient` 实现；节奏在外层注入，保持防风控策略统一。
+- `assemble.py`：`build(edition)` 按 capabilities 装配 client/store/pace/gate；trial 已校验单账号拒收、候选封顶 2。
+- 自检：语法全过 + capabilities.validate 全过 + 三版 assemble 装配过 + core 零耦合扫描过。
+
+> 待办：至尊版**真发**一轮（现仅装配自检通过）核验 runner 端到端；老脚本 `maintain_fans.py` / `interaction_round.py` 暂不删（保留并行跑，待新链路真发确认后再切换）。
 
 ## 6. 验收 KPI（立项即定，防货不对板）
 

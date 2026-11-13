@@ -204,6 +204,12 @@ cookiesFile
 uploadFile
 videoFile
 
+# 视频素材（本地产品样例，不入库）
+videos/*.mp4
+videos/*.png
+videos/*.txt
+!videos/.gitkeep
+
 /uploader/bilibili_uploader/qrcode.png
 
 # 本地个人使用的浏览器自动化开发 Skill，不随开源仓库发布
