@@ -185,6 +185,19 @@ package-lock.json
 
 # database
 db/database.db
+# 09 本地闭环镜像库（含昵称/username，本地数据不外发）
+db/*.sqlite3
+db/*.sqlite3-wal
+db/*.sqlite3-shm
+db/*_backup.sqlite3
+# 09 本地运行日志/状态/截图（本地数据不外发）
+logs/
+*.png
+# 浏览器 profile 探针缓存
+.chrome_profile_probe/
+# 09 探路原始样本/归档（含第三方昵称/username，本地数据不外发）
+docs/probe_api_samples/
+docs/round_archive/
 
 # 临时文件夹
 cookiesFile

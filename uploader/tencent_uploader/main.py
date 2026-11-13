@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import inspect
+import json
 import os
 import time
 from datetime import datetime
@@ -15,6 +16,11 @@ from patchright.async_api import Playwright
 from patchright.async_api import async_playwright
 
 from conf import BASE_DIR, DEBUG_MODE, LOCAL_CHROME_HEADLESS, LOCAL_CHROME_PATH
+
+# 系统 Chrome 路径 + 从本机复制出的独立视频号 profile（用 persistent context 复用已登录会话，免扫码）。
+# 仅在 LOCAL_CHROME_PATH 指向系统 Chrome 时生效；缺任一即退回原扫码流程。
+SYSTEM_CHROME_EXE = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
+TENCENT_PROFILE_DIR = BASE_DIR / "cookies" / "chrome_profile_tencent"
 from uploader.base_video import BaseVideoUploader
 from utils.base_social_media import set_init_script
 from utils.log import tencent_logger
@@ -104,8 +110,9 @@ def format_str_for_short_title(origin_title: str) -> str:
     if len(formatted_string) > 15:
         formatted_string = formatted_string[:15]
     if len(formatted_string) < 7:
-        # 不足下限时补足到 7；不能用尾部空格（会被平台 trim 掉导致仍不达标）
-        filler = "，精彩内容分享"
+        # 不足下限时补足到 7；不能用尾部空格（会被平台 trim 掉导致仍不达标），
+        # 更不能用逗号/顿号——平台只许 《》 “” : + ? % °，逗号会被拒（2026-11-13 实测）。
+        filler = " 精彩内容分享"
         formatted_string = (formatted_string + filler)[:7] if formatted_string else "精彩视频内容分享"
 
     return formatted_string
@@ -119,18 +126,23 @@ async def cookie_auth(account_file):
             context = await browser.new_context(storage_state=account_file)
             context = await set_init_script(context)
             page = await context.new_page()
-            await page.goto(TENCENT_UPLOAD_URL, wait_until="domcontentloaded")
+            await page.goto(TENCENT_UPLOAD_URL, wait_until="domcontentloaded", timeout=120000)
 
-            # cookie 失效时, 页面先停在 post/create, 随后由前端 JS 跳转到登录页;
-            # 必须等待跳转完成再判断, 否则会误报"cookie 有效"
+            # 视频号前端在 domcontentloaded 之后才异步判定登录态并跳转；
+            # 只等 8 秒容易在慢网下误报「有效」，结果上传页一开就被踢回登录页。
+            # 改为：先给前端留出充分判定时间，再用 URL / 扫码 iframe / 表单三重硬判据。
             try:
-                await page.wait_for_url("**/login.html**", timeout=8000)
+                await page.wait_for_load_state("networkidle", timeout=30000)
+            except Exception:
+                pass
+            await page.wait_for_timeout(5000)
+
+            # 注意：不能用「有没有 input[type=file]」判登录态——视频号改版后
+            # 直接全页打开 post/create 时表单 iframe 本就只挂空壳，有效 cookie 也没有
+            # file input。可靠判据只有两个：URL 落到 login.html / 出现扫码 iframe。
+            if "login.html" in page.url:
                 tencent_logger.info(_msg("🥹", "cookie 已失效（页面跳转到登录页），得重新登录一下"))
                 return False
-            except Exception:
-                pass  # 8 秒内未跳转, 大概率已登录
-
-            # 双保险: 页面里出现微信扫码登录 iframe 也视为失效
             for fr in page.frames:
                 if "open.weixin.qq.com/connect/qrconnect" in fr.url:
                     tencent_logger.info(_msg("🥹", "cookie 已失效（页面出现扫码登录框），得重新登录一下"))
@@ -398,7 +410,7 @@ async def tencent_cookie_gen(
         result = _build_login_result(False, "failed", "视频号登录失败", account_file)
         try:
             page = await context.new_page()
-            await page.goto(TENCENT_LOGIN_URL)
+            await page.goto(TENCENT_LOGIN_URL, timeout=120000, wait_until="domcontentloaded")
             try:
                 qrcode_info = await _save_tencent_qrcode(page, account_file, qrcode_callback=qrcode_callback)
                 qrcode_path = Path(qrcode_info["image_path"])
@@ -449,6 +461,52 @@ async def tencent_cookie_gen(
             await browser.close()
 
 
+async def tencent_session_refresh(account_file) -> bool:
+    """优先零扫码续命：用系统 Chrome + 独立视频号 profile 起 persistent context，
+    从本机已登录会话重抽 cookie 落盘。成功返回 True；任一条件不满足（Chrome 未关、
+    独立 profile 缺失、视频号已退出登录）返回 False，由调用方退回扫码流程。"""
+    account_file = _resolve_account_file(account_file)
+    exe = LOCAL_CHROME_PATH or SYSTEM_CHROME_EXE
+    if not Path(exe).exists() or not TENCENT_PROFILE_DIR.exists():
+        return False
+    try:
+        async with async_playwright() as playwright:
+            context = await playwright.chromium.launch_persistent_context(
+                user_data_dir=str(TENCENT_PROFILE_DIR),
+                executable_path=exe,
+                headless=False,
+                args=["--no-first-run", "--no-default-browser-check", "--disable-extensions"],
+            )
+            try:
+                page = context.pages[0] if context.pages else await context.new_page()
+                await page.goto(TENCENT_MANAGE_URL, wait_until="domcontentloaded", timeout=120000)
+                try:
+                    await page.wait_for_load_state("networkidle", timeout=30000)
+                except Exception:
+                    pass
+                await page.wait_for_timeout(5000)
+                if "login.html" in page.url or any(
+                    "open.weixin.qq.com/connect/qrconnect" in fr.url for fr in page.frames
+                ):
+                    tencent_logger.warning(_msg("😵", "系统 Chrome 里视频号已退出登录，退回扫码流程"))
+                    return False
+                state = await context.storage_state()
+                keep = [c for c in state.get("cookies", []) if "weixin.qq.com" in c.get("domain", "")]
+                if not keep:
+                    return False
+                Path(account_file).parent.mkdir(parents=True, exist_ok=True)
+                Path(account_file).write_text(
+                    json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8"
+                )
+                tencent_logger.success(_msg("🥳", f"已从系统 Chrome 重抽视频号会话（{len(keep)} 条 cookie），免扫码"))
+                return True
+            finally:
+                await context.close()
+    except Exception as exc:
+        tencent_logger.warning(_msg("😵", f"零扫码续命失败，退回扫码流程: {exc}"))
+        return False
+
+
 async def tencent_setup(
     account_file,
     handle=False,
@@ -461,6 +519,11 @@ async def tencent_setup(
         if not handle:
             result = _build_login_result(False, "cookie_invalid", "cookie文件不存在或已失效", account_file)
             return result if return_detail else False
+
+        # 优先：从本机已登录的系统 Chrome 零扫码续命；失败（已退出登录/未关 Chrome）才退回扫码
+        if await tencent_session_refresh(account_file) and await cookie_auth(account_file):
+            result = _build_login_result(True, "cookie_valid", "cookie有效", account_file)
+            return result if return_detail else True
 
         tencent_logger.info(_msg("🥹", "cookie 失效了，准备打开浏览器重新登录"))
         result = await tencent_cookie_gen(account_file, qrcode_callback=qrcode_callback, headless=headless)
@@ -622,6 +685,12 @@ class TencentBaseUploader(BaseVideoUploader):
             pass  # 静默不了就算了，下面还有重试兜底
 
     async def upload_video_file(self, page: Page, file_path: str) -> None:
+        # 实物特征码（2026-11-13 老泡儿手动趟雷确认）：上传区是
+        #   <div class="ant-upload-drag-container"><div class="upload-content"><div class="center">
+        #     <span class="add-icon weui-icon-outlined-add"> ... 支持上传 8 小时以内...
+        # 这是 ant-design 拖拽上传，页面刚加载时没有 input[type=file]；必须点「+」/拖拽区
+        # 才会动态挂上 input。旧逻辑一上来就找 input，找不着就盲塞，结果标题都填好了视频
+        # 其实没上传，然后干等「发表」按钮变可用直到超时。
         async def find_file_input():
             for fr in page.frames:  # 主 frame + 所有 iframe（视频号编辑器可能在 iframe 内）
                 try:
@@ -632,31 +701,53 @@ class TencentBaseUploader(BaseVideoUploader):
                     continue
             return None
 
-        fi = await find_file_input()
-        clicked_publish = False
+        async def ensure_upload_widget():
+            """确认发布页的上传区已挂载；落在首页时点「发表视频」进发布页。"""
+            for fr in page.frames:
+                try:
+                    if await fr.locator("div.ant-upload-drag-container").count():
+                        return fr
+                except Exception:
+                    continue
+            # 可能还停在首页：点「发表视频」按钮进发布页（实物 class weui-desktop-btn_primary）
+            try:
+                entry = page.locator(
+                    'button.weui-desktop-btn.weui-desktop-btn_primary:has-text("发表视频")'
+                ).first
+                if await entry.count() and await entry.is_visible():
+                    await entry.click()
+                    await page.wait_for_timeout(2000)
+            except Exception:
+                pass
+            return None
+
+        widget_frame = None
         for _ in range(60):
+            widget_frame = await ensure_upload_widget()
+            if widget_frame is not None:
+                break
+            await asyncio.sleep(1)
+        if widget_frame is None:
+            raise RuntimeError("未找到视频号上传区（div.ant-upload-drag-container）")
+
+        # 点「+」图标/拖拽区，触发 ant-upload 动态挂载 input[type=file]
+        fi = await find_file_input()
+        if fi is None:
+            for sel in ("span.add-icon", "div.ant-upload-drag-container", "div.upload-content"):
+                try:
+                    target = widget_frame.locator(sel).first
+                    if await target.count() and await target.is_visible():
+                        await target.click()
+                        await page.wait_for_timeout(1000)
+                        break
+                except Exception:
+                    continue
+            fi = await find_file_input()
+        for _ in range(30):
             if fi is not None:
                 break
-            if not clicked_publish:
-                # 新版视频号助手可能先落在首页，且「发表视频」按钮异步出现。
-                # 持续轮询所有可访问 button；Patchright 在当前页面上按名称精确匹配不稳定。
-                try:
-                    publish_buttons = await page.get_by_role("button").all()
-                except Exception:
-                    publish_buttons = []
-                for candidate in publish_buttons:
-                    try:
-                        button_text = (await candidate.inner_text()).strip()
-                        is_visible = await candidate.is_visible()
-                    except Exception:
-                        continue
-                    if "发表视频" in button_text and is_visible:
-                        await candidate.click(force=True)
-                        clicked_publish = True
-                        break
+            await asyncio.sleep(1)
             fi = await find_file_input()
-            if fi is None:
-                await asyncio.sleep(1)
         if fi is None:
             # 留现场：这个错误的可能原因太多（没登录 / 落到首页 / iframe 没加载完 /
             # 平台改版），只看错误字符串没法区分，截图能一眼看出是哪种。
@@ -672,6 +763,31 @@ class TencentBaseUploader(BaseVideoUploader):
                 pass
             raise RuntimeError("未找到视频号文件上传框")
         await fi.set_input_files(file_path)
+
+        # 硬校验：塞完文件后上传区必须真的进入「已选文件」状态，不能只信 set_input_files 没抛错。
+        # 判据：拖拽区不再显示「支持上传 8 小时以内」提示，或出现文件名/进度/删除入口。
+        uploaded = False
+        for _ in range(30):
+            try:
+                tip = widget_frame.locator("div.upload-tip:has-text('支持上传 8 小时以内')")
+                if await tip.count() == 0:
+                    uploaded = True
+                    break
+                if await widget_frame.locator('div.media-status-content, input[value*="mp4"]').count():
+                    uploaded = True
+                    break
+            except Exception:
+                pass
+            await asyncio.sleep(1)
+        if not uploaded:
+            try:
+                shot = Path(BASE_DIR) / "debug_tencent_file_not_accepted.png"
+                await page.screenshot(path=str(shot), full_page=True)
+                tencent_logger.info(_msg("📸", f"文件未被上传区接收，现场已截图 {shot}"))
+            except Exception:
+                pass
+            raise RuntimeError("视频文件已送入 input 但上传区未接收（多半是规格不合规：分辨率/帧率/音轨/时长）")
+        tencent_logger.info(_msg("🥳", "视频文件已被上传区接收"))
 
     async def set_short_title(self, page: Page, title: str, short_title: str | None = None) -> None:
         # 视频号「短标题」即界面上要求填写的“标题”（那个大编辑区其实是“视频描述”）。
@@ -838,12 +954,18 @@ class TencentBaseUploader(BaseVideoUploader):
                     f"视频号上传超过 {timeout_seconds} 秒仍未完成（「发表」按钮一直不可用）"
                 )
             try:
-                publish_button = page.locator('div.form-btns button:has-text("发表"):visible').first
+                # 实物特征码（2026-11-13 老泡儿手动趟雷确认）：
+                #   <span class="weui-desktop-popover__target"><div class="weui-desktop-btn_wrp">
+                #     <button class="weui-desktop-btn weui-desktop-btn_primary [weui-desktop-btn_disabled]">发表</button>
+                # 按钮不在 div.form-btns 里，旧选择器永远等不到「上传完毕」。
+                publish_button = page.locator(
+                    'button.weui-desktop-btn:has-text("发表"):not(:has-text("发表视频"))'
+                ).first
                 if await publish_button.count():
-                    button_class = await publish_button.get_attribute("class")
+                    button_class = await publish_button.get_attribute("class") or ""
                     if (
                         not await publish_button.is_disabled()
-                        and (not button_class or "weui-desktop-btn_disabled" not in button_class)
+                        and "weui-desktop-btn_disabled" not in button_class
                     ):
                         tencent_logger.info(_msg("🥳", "视频上传完毕"))
                         break
@@ -888,7 +1010,11 @@ class TencentBaseUploader(BaseVideoUploader):
                 await page.evaluate("""() => document.querySelectorAll('.mask, .changeAccount-dialog, .common-dialog').forEach(e => e.remove())""")
             except Exception:
                 pass
-            publish_btn = page.get_by_role("button", name="发表", exact=True).first if not is_draft else page.get_by_role("button", name="保存草稿").first
+            publish_btn = (
+                page.locator('button.weui-desktop-btn:has-text("发表"):not(:has-text("发表视频"))').first
+                if not is_draft
+                else page.get_by_role("button", name="保存草稿").first
+            )
             try:
                 if await publish_btn.count() and await publish_btn.is_visible():
                     break
