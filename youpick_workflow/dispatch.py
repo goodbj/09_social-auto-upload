@@ -1,6 +1,7 @@
 """第 6 步·派 11（把采纳候选打包成派工单，投给 11-ImageGen 图像视频部）。
 
-11 号簇真源：`E:/AI/AI_Memory/知识库/11-ImageGen-图像视频部/`（主管 11_00，信道 `run_c4f2e504f048`）。
+11 号簇真源：`Common-公共库/00-Governance-治理规范/dispatch_routing.yaml`（id: '11' -> channel），
+主管 11_00，现役协调信道随真源漂移（#301 机制），本脚本不写死字面。
 本职给下游 09 供 L2 视频生成插件——所以「派 11 做新集」= 把采纳的选题/痛点投过去，让它生成新视频。
 
 本脚本：
@@ -23,7 +24,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent.resolve()))
 from db import interaction_store as store
 
 TARGET_CLUSTER = "11-ImageGen"
-TARGET_RUN = "run_c4f2e504f048"
+# 11 部门现役协调信道从 dispatch_routing.yaml 真源解析（#301 机制），不写死字面
+TARGET_RUN = store.resolve_cluster_channel("11")
 DISPATCH_DIR = Path(__file__).parent / "data" / "dispatch"
 
 

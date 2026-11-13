@@ -165,9 +165,9 @@ youpick_workflow/
 M2 跑通的六步里第 4 步「候选搜集」已落库（`candidates` 表，`decision=待拍板`），但 **第 5 步拍板、第 6 步派 11 做新集**是断的——候选落库后没人接。M4 把这条断链接通。
 
 - **第 5 步·拍板（`youpick_workflow/decide.py`）**：出候选报告（按 round 分组、标 signage）→ 老泡儿拍板（采纳/搁置）。改 `decision` 字段属库写入，按红线须老泡儿点头；`decide.py` 默认 `--dry` 只出报告不写库，带 `--apply --ids 1,2` 才落库。
-- **第 6 步·派 11（`youpick_workflow/dispatch.py`）**：把 `decision=采纳` 的候选打包成派工 JSON（选题/痛点/目标平台=weixin），投递到 11 号簇协调信道 `run_c4f2e504f048`（11-ImageGen 图像视频部，主管 11_00，给下游供 L2 视频生成插件）。本地先落 `data/dispatch/` 工单文件，真投递走 orca 信道须先 `orca terminal list` 确认 11 在线（不空发）。
+- **第 6 步·派 11（`youpick_workflow/dispatch.py`）**：把 `decision=采纳` 的候选打包成派工 JSON（选题/痛点/目标平台=weixin），投递到 11 号簇协调信道（11-ImageGen 图像视频部，主管 11_00，给下游供 L2 视频生成插件）。**11 部门现役信道从 `Common-公共库/00-Governance-治理规范/dispatch_routing.yaml`（id: '11' -> channel）真源解析，随 #301 机制漂移，本脚本不写死字面**。本地先落 `data/dispatch/` 工单文件，真投递走 orca 信道须先 `orca terminal list` 确认 11 在线（不空发）。
 - **回执落库**：派工记录进 `dispatch_orders` 表（候选→工单→11回执三态）；11 回执回来后 `UPDATE dispatched_at/ack_at/status`，闭环第 4~6 步接通。
-- 11 号簇归属/接口真源：`E:/AI/AI_Memory/知识库/11-ImageGen-图像视频部/`（信道 `run_c4f2e504f048`、公共簇 `run_1cd4e1700daf`）。
+- 11 号簇归属/接口真源：`Common-公共库/00-Governance-治理规范/dispatch_routing.yaml`（id: '11' -> channel，现役信道单一真源，随 #301 机制漂移；公共簇 `run_1cd4e1700daf`）。09 代码不写死 11 信道字面，统一经 `db.interaction_store.resolve_cluster_channel("11")` 解析。
 
 ### M4 验收：
 - `decide.py` 出报告 + 拍板落库自测通过（采纳/搁置两态入库）；

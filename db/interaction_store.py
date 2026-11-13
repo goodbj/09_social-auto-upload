@@ -22,12 +22,24 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sqlite3
 from datetime import datetime
 from pathlib import Path
 
 BASE_DIR = Path(__file__).parent.parent.resolve()
 DB_PATH = BASE_DIR / "youpick_workflow" / "data" / "youpick_interaction.sqlite3"
+
+# 派工信道单一真源（#301 回填机制）：11 部门（ImageGen）现役协调信道随此 yaml 漂移。
+# 11 部门真源见 Common-公共库/00-Governance-治理规范/dispatch_routing.yaml（id: '11' -> channel）。
+# 09 代码不写死任何信道字面，统一走 resolve_cluster_channel() 解析；解析失败回落已核真值。
+DISPATCH_ROUTING_CANDIDATES = [
+    Path(os.environ.get("YOUPICK_DISPATCH_ROUTING", "")) if os.environ.get("YOUPICK_DISPATCH_ROUTING") else None,
+    Path("E:/AI/AI_Memory/Common-公共库/00-Governance-治理规范/dispatch_routing.yaml"),
+    Path.home() / "AI_Memory/Common-公共库/00-Governance-治理规范/dispatch_routing.yaml",
+]
+# 已核真值（2026-11 dispatch_routing.yaml id: '11' channel），仅作解析失败的兜底，不进任何作业链路字面
+FALLBACK_CLUSTER_CHANNEL = "run_9730ea5c42b6"
 
 # 已知亲友 / 自测样本（老泡儿 2026-11-13 当面说明；后续有新号往这儿补）
 SELF_NICKNAMES = {"丸小子998"}                 # 主号自己
@@ -151,7 +163,7 @@ CREATE TABLE IF NOT EXISTS dispatch_orders (
     platform        TEXT NOT NULL DEFAULT 'weixin',
     account         TEXT NOT NULL DEFAULT '丸小子998',
     target_cluster  TEXT NOT NULL DEFAULT '11-ImageGen',
-    target_run      TEXT NOT NULL DEFAULT 'run_c4f2e504f048',
+    target_run      TEXT NOT NULL DEFAULT 'run_9730ea5c42b6',  -- 11 部门现役信道（已核真值，#301 回填）；运行时 create_dispatch_order 经 resolve_cluster_channel() 从 dispatch_routing.yaml 解析，真值漂移以真源为准
     topic           TEXT NOT NULL DEFAULT '',
     payload_json    TEXT NOT NULL DEFAULT '{}',
     status          TEXT NOT NULL DEFAULT 'created',
@@ -487,11 +499,52 @@ def list_pending_candidates(platform: str = DEFAULT_PLATFORM, account: str = DEF
         conn.close()
 
 
+def resolve_cluster_channel(cluster_id: str = "11") -> str:
+    """从 dispatch_routing.yaml 解析某部门现役协调信道（单一真源，#301 机制）。
+
+    09 代码不写死信道字面，统一经此解析；yaml 不可读/无匹配时回落已核真值兜底，
+    绝不返回死号字面。cluster_id 默认 '11'（ImageGen 图像视频部）。
+    """
+    for cand in DISPATCH_ROUTING_CANDIDATES:
+        path = cand if isinstance(cand, Path) else None
+        if not path or not path.is_file():
+            continue
+        try:
+            import yaml  # 优先用 pyyaml，结构清晰
+        except ImportError:
+            yaml = None
+        try:
+            if yaml is not None:
+                data = yaml.safe_load(path.read_text(encoding="utf-8"))
+                for item in data:
+                    if str(item.get("id")) == cluster_id:
+                        ch = item.get("channel")
+                        if ch:
+                            return str(ch)
+            else:
+                # 无 pyyaml 时退化为行解析：匹配 "- id: '<cluster_id>'" 段内的 "channel: <值>"
+                text = path.read_text(encoding="utf-8")
+                lines = text.splitlines()
+                in_block = False
+                for i, line in enumerate(lines):
+                    if line.strip().startswith("- id:"):
+                        in_block = str(cluster_id) in line
+                        continue
+                    if in_block and line.strip().startswith("channel:"):
+                        return line.split(":", 1)[1].strip().strip("'\"")
+        except Exception:
+            continue
+    # 兜底：已核真值（解析失败不落死号）。如真值也漂移，改 dispatch_routing.yaml 即生效。
+    return FALLBACK_CLUSTER_CHANNEL
+
+
 def create_dispatch_order(candidate_id: int, payload: dict, *, platform: str = DEFAULT_PLATFORM,
                           account: str = DEFAULT_ACCOUNT,
                           target_cluster: str = "11-ImageGen",
-                          target_run: str = "run_c4f2e504f048") -> int:
+                          target_run: str | None = None) -> int:
     """把采纳候选打包成派工单，落 dispatch_orders（created 态）。返回 order_id。"""
+    if target_run is None:
+        target_run = resolve_cluster_channel("11")
     conn = connect()
     try:
         cur = conn.execute(
